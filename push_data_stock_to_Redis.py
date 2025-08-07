@@ -56,14 +56,23 @@ def fetch_stock_data(cursor, stock_ticker: str, time_condition: str):
 
     processed_rows = []
     for row in rows:
-        # Chuẩn hóa dữ liệu trước khi trả về
-        processed_rows.append({
-            'date': row['date'].strftime('%Y-%m-%d'),
-            'close_price': float(str(row['close_price']).replace(',', ''))
-        })
+        # Kiểm tra nếu 'date' hoặc 'close_price' là None (NULL trong DB) thì bỏ qua dòng này
+        if row.get('date') is None or row.get('close_price') is None:
+            logging.warning(f"Bỏ qua dòng dữ liệu bị thiếu thông tin: date hoặc close_price là NULL. Dữ liệu: {row}")
+            continue
+        
+        # Code xử lý chỉ chạy khi dữ liệu hợp lệ
+        try:
+            processed_rows.append({
+                'date': row['date'].strftime('%Y-%m-%d'),
+                'close_price': float(str(row['close_price']).replace(',', ''))
+            })
+        except (ValueError, TypeError) as e:
+            # Bắt thêm lỗi nếu giá trị không phải là số sau khi đã xử lý
+            logging.error(f"Không thể chuyển đổi giá trị close_price thành số: '{row['close_price']}'. Lỗi: {e}. Bỏ qua dòng này.")
+            continue
         
     return processed_rows
-
 def sync_stock_data_to_redis():
     """
     Hàm chính để đồng bộ dữ liệu giá cổ phiếu từ Postgres (Supabase) sang Redis.
