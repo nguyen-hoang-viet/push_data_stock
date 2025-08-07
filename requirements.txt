@@ -1,0 +1,9 @@
+Flask
+Flask-Cors
+psycopg2
+python-dotenv
+fastapi
+uvicorn
+gunicorn
+psycopg2-binary
+redis
