@@ -121,6 +121,15 @@ def sync_stock_data_to_redis():
 # --- TẠO ỨNG DỤNG VÀ API ENDPOINT (Tùy chọn, nếu bạn muốn kích hoạt qua API) ---
 app = FastAPI()
 
+# --- ENDPOINT MỚI ĐƯỢC THÊM VÀO ---
+@app.get("/")
+async def health_check():
+    """
+    Endpoint này chỉ dùng để kiểm tra xem server có hoạt động không.
+    Google Apps Script sẽ gọi đến đây để giữ cho server không bị "ngủ".
+    """
+    return {"status": "alive"}
+
 @app.post("/push_stock_data")
 async def trigger_stock_sync_endpoint():
     """
