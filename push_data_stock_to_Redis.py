@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException
 # --- CẤU HÌNH LOGGING ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# --- CÁC HÀM KẾT NỐI (Giữ nguyên như file cũ) ---
+# --- CÁC HÀM KẾT NỐI (Giữ nguyên) ---
 def get_db_connection():
     load_dotenv()
     conn = psycopg2.connect(
@@ -32,17 +32,37 @@ def get_redis_connection():
     )
     return r
 
-# --- HÀM LOGIC MỚI ---
+# --- HÀM LOGIC ---
+
+def process_rows(rows, price_column_name='close_price'):
+    """
+    Hàm phụ trợ để xử lý các dòng dữ liệu, chuyển đổi và làm sạch.
+    """
+    processed_rows = []
+    for row in rows:
+        # Kiểm tra nếu 'date' hoặc cột giá là None thì bỏ qua
+        if row.get('date') is None or row.get(price_column_name) is None:
+            logging.warning(f"Bỏ qua dòng dữ liệu bị thiếu: date hoặc {price_column_name} là NULL. Dữ liệu: {row}")
+            continue
+        
+        try:
+            processed_rows.append({
+                'date': row['date'].strftime('%Y-%m-%d'),
+                'close_price': float(str(row[price_column_name]).replace(',', ''))
+            })
+        except (ValueError, TypeError) as e:
+            logging.error(f"Không thể chuyển đổi giá trị {price_column_name} thành số: '{row[price_column_name]}'. Lỗi: {e}. Bỏ qua dòng này.")
+            continue
+    return processed_rows
 
 def fetch_stock_data(cursor, stock_ticker: str, time_condition: str):
     """
     Hàm phụ trợ để lấy và xử lý dữ liệu cho một cổ phiếu với một điều kiện thời gian cụ thể.
+    Áp dụng cho các trường hợp: all, 3M, 1Y, 5Y.
     """
     table_name = f'"{stock_ticker}_Stock"'
     logging.info(f"Bắt đầu lấy dữ liệu cho bảng: {table_name} với điều kiện: {time_condition or 'Tất cả'}...")
     
-    # Xây dựng câu query động
-    # Chỉ lấy 2 cột cần thiết và sắp xếp theo ngày để biểu đồ vẽ đúng
     query = f"""
         SELECT "date", "close_price" 
         FROM {table_name} 
@@ -53,38 +73,58 @@ def fetch_stock_data(cursor, stock_ticker: str, time_condition: str):
     cursor.execute(query)
     rows = cursor.fetchall()
     logging.info(f"Đã lấy được {len(rows)} dòng.")
+    
+    return process_rows(rows, 'close_price')
 
-    processed_rows = []
-    for row in rows:
-        # Kiểm tra nếu 'date' hoặc 'close_price' là None (NULL trong DB) thì bỏ qua dòng này
-        if row.get('date') is None or row.get('close_price') is None:
-            logging.warning(f"Bỏ qua dòng dữ liệu bị thiếu thông tin: date hoặc close_price là NULL. Dữ liệu: {row}")
-            continue
-        
-        # Code xử lý chỉ chạy khi dữ liệu hợp lệ
-        try:
-            processed_rows.append({
-                'date': row['date'].strftime('%Y-%m-%d'),
-                'close_price': float(str(row['close_price']).replace(',', ''))
-            })
-        except (ValueError, TypeError) as e:
-            # Bắt thêm lỗi nếu giá trị không phải là số sau khi đã xử lý
-            logging.error(f"Không thể chuyển đổi giá trị close_price thành số: '{row['close_price']}'. Lỗi: {e}. Bỏ qua dòng này.")
-            continue
-        
-    return processed_rows
+def fetch_stock_data_1m_combined(cursor, stock_ticker: str):
+    """
+    Hàm MỚI: Lấy dữ liệu 1 tháng gần nhất và dữ liệu dự đoán 10 ngày tới.
+    """
+    table_name = f'"{stock_ticker}_Stock"'
+    logging.info(f"Bắt đầu lấy dữ liệu KẾT HỢP (1M) cho bảng: {table_name}...")
+
+    # 1. Lấy dữ liệu quá khứ (close_price) trong 1 tháng trước
+    past_query = f"""
+        SELECT "date", "close_price"
+        FROM {table_name}
+        WHERE "date" >= (NOW() - INTERVAL '1 month') AND "date" < NOW()::date
+        ORDER BY "date" ASC;
+    """
+    cursor.execute(past_query)
+    past_rows = cursor.fetchall()
+    logging.info(f"1M - Quá khứ: Đã lấy được {len(past_rows)} dòng.")
+    processed_past_data = process_rows(past_rows, 'close_price')
+
+    # 2. Lấy dữ liệu dự đoán (predict_price) từ hôm nay đến 10 ngày sau
+    # Dùng alias "close_price" để hàm process_rows có thể tái sử dụng
+    future_query = f"""
+        SELECT "date", "predict_price" AS "close_price"
+        FROM {table_name}
+        WHERE "date" >= NOW()::date AND "date" <= (NOW()::date + INTERVAL '10 days')
+        ORDER BY "date" ASC;
+    """
+    cursor.execute(future_query)
+    future_rows = cursor.fetchall()
+    logging.info(f"1M - Dự đoán: Đã lấy được {len(future_rows)} dòng.")
+    processed_future_data = process_rows(future_rows, 'close_price')
+    
+    # 3. Kết hợp hai bộ dữ liệu
+    combined_data = processed_past_data + processed_future_data
+    logging.info(f"1M - Tổng cộng: {len(combined_data)} dòng sau khi kết hợp.")
+    
+    return combined_data
+
 def sync_stock_data_to_redis():
     """
-    Hàm chính để đồng bộ dữ liệu giá cổ phiếu từ Postgres (Supabase) sang Redis.
+    Hàm chính để đồng bộ dữ liệu giá cổ phiếu từ Postgres sang Redis.
     """
     logging.info("Bắt đầu quá trình đồng bộ dữ liệu CỔ PHIẾU...")
     pg_conn = None
     
-    # Định nghĩa các cổ phiếu và các khung thời gian cần lấy
     STOCKS_TO_PROCESS = ["FPT", "GAS", "IMP", "VCB"]
     TIME_RANGES = {
-        "all": "", # Lấy tất cả dữ liệu
-        "1M": "WHERE \"date\" >= NOW() - INTERVAL '1 month'",
+        "all": "",
+        "1M": "SPECIAL_CASE", # Đánh dấu trường hợp đặc biệt
         "3M": "WHERE \"date\" >= NOW() - INTERVAL '3 months'",
         "1Y": "WHERE \"date\" >= NOW() - INTERVAL '1 year'",
         "5Y": "WHERE \"date\" >= NOW() - INTERVAL '5 years'",
@@ -96,23 +136,23 @@ def sync_stock_data_to_redis():
         redis_conn = get_redis_connection()
 
         with redis_conn.pipeline() as pipe:
-            # Lặp qua từng cổ phiếu
             for ticker in STOCKS_TO_PROCESS:
-                # Lặp qua từng khung thời gian
                 for range_key, condition in TIME_RANGES.items():
-                    # Gọi hàm phụ trợ để lấy dữ liệu
-                    stock_data = fetch_stock_data(cursor, ticker, condition)
+                    stock_data = []
+                    # --- LOGIC ĐƯỢC CẬP NHẬT ---
+                    if range_key == "1M":
+                        # Gọi hàm mới cho trường hợp 1M
+                        stock_data = fetch_stock_data_1m_combined(cursor, ticker)
+                    else:
+                        # Giữ nguyên logic cũ cho các trường hợp khác
+                        stock_data = fetch_stock_data(cursor, ticker, condition)
                     
                     if stock_data:
-                        # Tạo key cho Redis, ví dụ: "stock:FPT:1Y"
                         redis_key = f"stock:{ticker}:{range_key}"
                         json_data = json.dumps(stock_data)
-                        
-                        # Thêm lệnh SET vào pipeline, tự động hết hạn sau 1 ngày (86400 giây)
-                        pipe.set(redis_key, json_data, ex=86400)
+                        pipe.set(redis_key, json_data, ex=86400) # Hết hạn sau 1 ngày
                         logging.info(f"Đã chuẩn bị đẩy {len(stock_data)} bản ghi cho key '{redis_key}'.")
 
-            # Thực thi tất cả các lệnh trong pipeline một lần duy nhất
             pipe.execute()
         
         logging.info("Đã đẩy thành công tất cả dữ liệu cổ phiếu lên Redis.")
@@ -127,29 +167,21 @@ def sync_stock_data_to_redis():
             logging.info("Đã đóng kết nối PostgreSQL.")
 
 
-# --- TẠO ỨNG DỤNG VÀ API ENDPOINT (Tùy chọn, nếu bạn muốn kích hoạt qua API) ---
+# --- TẠO ỨNG DỤNG VÀ API ENDPOINT (Giữ nguyên) ---
 app = FastAPI()
 
-# --- ENDPOINT MỚI ĐƯỢC THÊM VÀO ---
 @app.get("/")
 async def health_check():
-    """
-    Endpoint này chỉ dùng để kiểm tra xem server có hoạt động không.
-    Google Apps Script sẽ gọi đến đây để giữ cho server không bị "ngủ".
-    """
     return {"status": "alive"}
 
 @app.post("/push_stock_data")
 async def trigger_stock_sync_endpoint():
-    """
-    Endpoint để kích hoạt quá trình đồng bộ dữ liệu cổ phiếu.
-    """
     try:
         result = sync_stock_data_to_redis()
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# Để có thể chạy file này độc lập để kiểm tra:
+# Để chạy file này độc lập để kiểm tra:
 # if __name__ == "__main__":
 #     sync_stock_data_to_redis()
