@@ -112,16 +112,29 @@ def fetch_stock_data_1m_combined(cursor, stock_ticker: str):
     logging.info(f"Bắt đầu lấy dữ liệu KẾT HỢP (1M) cho bảng: {table_name}...")
 
     # 1. Lấy dữ liệu quá khứ (close_price) trong 1 tháng trước
-    past_query = f"""
+    past_historical_query = f"""
         SELECT "date", "close_price"
         FROM {table_name}
         WHERE "date" >= (NOW() - INTERVAL '1 month') AND "date" < NOW()::date
         ORDER BY "date" ASC;
     """
-    cursor.execute(past_query)
-    past_rows = cursor.fetchall()
-    logging.info(f"1M - Quá khứ: Đã lấy được {len(past_rows)} dòng.")
-    processed_past_data = process_rows(past_rows, 'close_price')
+    cursor.execute(past_historical_query)
+    past_historical_rows = cursor.fetchall()
+    logging.info(f"1M - Quá khứ (close_price): Đã lấy được {len(past_historical_rows)} dòng.")
+    processed_past_historical = process_rows(past_historical_rows, 'close_price')
+    
+    # 1.2. Lấy dữ liệu predict_price của quá khứ (nếu có)
+    past_prediction_query = f"""
+        SELECT "date", "predict_price"
+        FROM {table_name}
+        WHERE "date" >= (NOW() - INTERVAL '1 month') AND "date" < NOW()::date
+        AND "predict_price" IS NOT NULL
+        ORDER BY "date" ASC;
+    """
+    cursor.execute(past_prediction_query)
+    past_prediction_rows = cursor.fetchall()
+    logging.info(f"1M - Quá khứ (predict_price): Đã lấy được {len(past_prediction_rows)} dòng.")
+    processed_past_predictions = process_rows_with_prediction(past_prediction_rows, 'predict_price', keep_original_label=True)
 
     # 2. Lấy dữ liệu dự đoán (predict_price) từ hôm nay đến 10 ngày sau
     # Giữ nguyên tên cột predict_price
@@ -136,9 +149,10 @@ def fetch_stock_data_1m_combined(cursor, stock_ticker: str):
     logging.info(f"1M - Dự đoán: Đã lấy được {len(future_rows)} dòng.")
     processed_future_data = process_rows_with_prediction(future_rows, 'predict_price', keep_original_label=True)
     
-    # 3. Kết hợp hai bộ dữ liệu
-    combined_data = processed_past_data + processed_future_data
-    logging.info(f"1M - Tổng cộng: {len(combined_data)} dòng sau khi kết hợp.")
+    # 3. Kết hợp tất cả dữ liệu: quá khứ (historical + predictions) + tương lai (predictions)
+    all_past_data = processed_past_historical + processed_past_predictions
+    combined_data = all_past_data + processed_future_data
+    logging.info(f"1M - Tổng cộng: {len(combined_data)} dòng sau khi kết hợp (Historical: {len(processed_past_historical)}, Past Predictions: {len(processed_past_predictions)}, Future Predictions: {len(processed_future_data)}).")
     
     return combined_data
 
