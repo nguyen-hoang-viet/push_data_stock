@@ -36,7 +36,7 @@ def get_redis_connection():
 
 def process_rows(rows, price_column_name='close_price'):
     """
-    Hàm phụ trợ để xử lý các dòng dữ liệu, chuyển đổi và làm sạch.
+    Hàm phụ trợ để xử lý các dòng dữ liệu, chuyển đổi và làm sạch (cho các trường hợp thông thường).
     """
     processed_rows = []
     for row in rows:
@@ -50,6 +50,34 @@ def process_rows(rows, price_column_name='close_price'):
                 'date': row['date'].strftime('%Y-%m-%d'),
                 'close_price': float(str(row[price_column_name]).replace(',', ''))
             })
+        except (ValueError, TypeError) as e:
+            logging.error(f"Không thể chuyển đổi giá trị {price_column_name} thành số: '{row[price_column_name]}'. Lỗi: {e}. Bỏ qua dòng này.")
+            continue
+    return processed_rows
+
+def process_rows_with_prediction(rows, price_column_name='close_price', keep_original_label=False):
+    """
+    Hàm xử lý dữ liệu với khả năng giữ nguyên label gốc cho predict_price.
+    """
+    processed_rows = []
+    for row in rows:
+        # Kiểm tra nếu 'date' hoặc cột giá là None thì bỏ qua
+        if row.get('date') is None or row.get(price_column_name) is None:
+            logging.warning(f"Bỏ qua dòng dữ liệu bị thiếu: date hoặc {price_column_name} là NULL. Dữ liệu: {row}")
+            continue
+        
+        try:
+            processed_row = {
+                'date': row['date'].strftime('%Y-%m-%d'),
+            }
+            
+            # Nếu keep_original_label=True và có predict_price, giữ nguyên label
+            if keep_original_label and price_column_name == 'predict_price':
+                processed_row['predict_price'] = float(str(row[price_column_name]).replace(',', ''))
+            else:
+                processed_row['close_price'] = float(str(row[price_column_name]).replace(',', ''))
+                
+            processed_rows.append(processed_row)
         except (ValueError, TypeError) as e:
             logging.error(f"Không thể chuyển đổi giá trị {price_column_name} thành số: '{row[price_column_name]}'. Lỗi: {e}. Bỏ qua dòng này.")
             continue
@@ -96,9 +124,9 @@ def fetch_stock_data_1m_combined(cursor, stock_ticker: str):
     processed_past_data = process_rows(past_rows, 'close_price')
 
     # 2. Lấy dữ liệu dự đoán (predict_price) từ hôm nay đến 10 ngày sau
-    # Dùng alias "close_price" để hàm process_rows có thể tái sử dụng
+    # Giữ nguyên tên cột predict_price
     future_query = f"""
-        SELECT "date", "predict_price" AS "close_price"
+        SELECT "date", "predict_price"
         FROM {table_name}
         WHERE "date" >= NOW()::date AND "date" <= (NOW()::date + INTERVAL '10 days')
         ORDER BY "date" ASC;
@@ -106,7 +134,7 @@ def fetch_stock_data_1m_combined(cursor, stock_ticker: str):
     cursor.execute(future_query)
     future_rows = cursor.fetchall()
     logging.info(f"1M - Dự đoán: Đã lấy được {len(future_rows)} dòng.")
-    processed_future_data = process_rows(future_rows, 'close_price')
+    processed_future_data = process_rows_with_prediction(future_rows, 'predict_price', keep_original_label=True)
     
     # 3. Kết hợp hai bộ dữ liệu
     combined_data = processed_past_data + processed_future_data
