@@ -115,7 +115,7 @@ def fetch_stock_data_1m_combined(cursor, stock_ticker: str):
     past_historical_query = f"""
         SELECT "date", "close_price"
         FROM {table_name}
-        WHERE "date" >= (NOW() - INTERVAL '1 month') AND "date" < NOW()::date
+        WHERE "date" >= (NOW() - INTERVAL '1 month') AND "date" <= NOW()::date
         ORDER BY "date" ASC;
     """
     cursor.execute(past_historical_query)
